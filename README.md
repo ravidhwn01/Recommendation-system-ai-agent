@@ -99,7 +99,7 @@ history. No DB/session store is used or needed.
 |---|---|---|
 | 0 — Setup | Repo skeleton, inspect catalog/trace data | ✅ done |
 | 1 — Data | `catalog.json` (Individual Test Solutions only) + BM25 index | ✅ done |
-| 2 — Agent core | Guard layer, slot extractor, policy, retriever, composer (unit tested) | not started |
+| 2 — Agent core | Guard layer, slot extractor, policy, retriever, composer (unit tested) | ✅ done |
 | 3 — API | `/health`, `/chat`, exact response schema, error handling | not started |
 | 4 — Evaluation | Harness over the 10 traces → Recall@10, hard-eval checks, behavior probes | not started |
 | 5 — Deploy | Dockerfile, deploy, verify cold start + live endpoints | not started |
@@ -150,6 +150,49 @@ The catalog and trace data were supplied directly (no live scraping needed):
   answer. Phase 2's policy will pull a wider candidate pool (top_k ≈ 15–20), possibly via multiple
   sub-queries per extracted slot, and let the LLM select/rerank within that pool.
 
+### Phase 2 findings
+
+Implemented as a compound pipeline (`app/pipeline.py`): `guard` -> `slots` (interpret) -> `policy`
+(decide) -> `retriever` (only when warranted) -> `compose`. At most **2 LLM calls per turn** -
+refusals and clarifying questions never call the LLM at all (deterministic templates / passthrough
+of the interpret call's own suggested question), which keeps latency low and refusal behavior
+un-overridable by clever phrasing.
+
+- `app/guard.py` - regex-based prompt-injection detection that runs **before** any LLM call, on the
+  raw last user message. This is deliberate: an injection's whole point is to make an LLM disobey its
+  instructions, so the first line of defense can't itself depend on an LLM being faithfully obedient.
+  Nuanced off-topic/legal-advice judgment is left to the LLM interpret call instead, since heuristics
+  there would be too prone to false positives (e.g. "is this EEOC compliant" is in-scope-adjacent).
+- `app/slots.py` - single JSON-mode LLM call that reads the **entire** history every time (stateless
+  by construction) and outputs scope, intent, accumulated constraints, and turn-state signals
+  (`ready_to_recommend`, `prior_recommendations_given`, `user_is_closing`). Offloading state
+  reconstruction to the LLM (rather than Python-side diffing) is what makes refinement
+  ("actually add a cognitive ability test") and re-confirmation work correctly without server-side
+  session state.
+- `app/policy.py` - pure Python decision logic on top of the interpretation. Key rule found by
+  testing: **recommend-readiness and comparison-readiness are independent flags**
+  (`should_recommend` vs `comparison_requested`). Initially comparison questions were forced down the
+  same path as recommendations, which caused a context-free "what's the difference between X and Y"
+  question to spuriously attach an unrelated shortlist (caught via smoke test - see below). Decoupling
+  them means a standalone comparison gets a grounded text answer with `recommendations: []`, while a
+  comparison asked *after* a shortlist already exists (matching trace C5) correctly continues
+  showing/refreshing that shortlist. Turn-budget is enforced here too: clarifying is only allowed for
+  the first two exchanges (`len(messages) < 5`, matching the pattern observed in trace C1), and a
+  `force_commit` flag instructs the composer it **must** select at least one candidate rather than
+  stalling once the budget is tight.
+- `app/compose.py` - the only LLM call that can produce `recommendations`. The model selects indices
+  into an already-retrieved candidate list and writes the reply; Python then maps indices back to
+  catalog rows for the actual `name`/`url`/`test_type`, so a hallucinated item is structurally
+  impossible (the model can't introduce a name/URL that isn't in the list it was given). On LLM
+  failure, falls back to top-ranked BM25 candidates with templated text rather than erroring.
+- `eval/smoke_test.py` - manual integration script (real Groq calls, not part of default `pytest`
+  since it needs network + API key) exercising clarify / recommend / refine / compare / legal-refusal
+  / off-topic-refusal / injection / force-commit. This is what caught the comparison-bleed bug above
+  before it reached Phase 4 evaluation - worth running again after any prompt or policy change.
+- `tests/test_guard.py`, `tests/test_policy.py` - 13 new unit tests, all deterministic (no LLM calls,
+  no network), covering injection detection and every policy branch including turn-cap edges. Full
+  suite: 23/23 passing.
+
 ---
 
 ## 6. Decisions log
@@ -161,6 +204,9 @@ The catalog and trace data were supplied directly (no live scraping needed):
 | 2026-07-01 | Retrieval: **BM25 + metadata filters** as the default, embeddings only if eval recall is insufficient | Catalog is small/structured; avoids model-download cold-start cost |
 | 2026-07-01 | Exclude 7 "X Solution"-named items from the raw catalog | They are Pre-packaged Job Solutions (multi-test bundles), out of scope per the brief |
 | 2026-07-01 | `test_type` derived from the `keys` category list via SHL's A/B/C/D/E/K/P/S legend, comma-joined for multi-category items | No explicit code field in the raw scrape; this format matches the provided trace files exactly |
+| 2026-07-01 | At most 2 LLM calls per turn (interpret + compose); refusals/clarifications use 0 LLM calls | Fits the 30s/call budget with headroom; refusal text being templated (not generated) means it can't be talked out of refusing |
+| 2026-07-01 | `should_recommend` and `comparison_requested` are independent policy flags, not one combined branch | A context-free comparison question was spuriously attaching an unrelated shortlist when comparison forced the same path as recommend-readiness; found via `eval/smoke_test.py` |
+| 2026-07-01 | Recommendations are built by mapping LLM-selected indices back to catalog rows in Python, never from LLM-generated text | Structurally prevents hallucinated names/URLs from ever reaching the response |
 
 ---
 
@@ -190,16 +236,20 @@ SHL/
 │   │   └── catalog_raw.json    # original scraped catalog (377 items, as supplied)
 │   └── catalog.json            # cleaned Individual Test Solutions catalog (370 items)
 ├── app/
-│   ├── main.py                  # FastAPI app: /health, /chat
-│   ├── schemas.py                # Pydantic request/response models
-│   ├── guard.py                  # off-topic/injection refusal logic
-│   ├── slots.py                   # conversation-state extraction from full history
-│   ├── policy.py                   # clarify/recommend/refine/compare decision logic
-│   ├── retriever.py                 # BM25 + metadata filtering over catalog.json
-│   └── compose.py                    # grounded reply generation
+│   ├── main.py                  # FastAPI app: /health, /chat (Phase 3, not yet built)
+│   ├── config.py                 # env loading: GROQ_API_KEY/MODEL, timeouts, turn-budget constants
+│   ├── schemas.py                 # Pydantic request/response models
+│   ├── llm.py                      # Groq client wrapper (chat_json / chat_text, fails soft)
+│   ├── guard.py                     # heuristic prompt-injection detection (pre-LLM)
+│   ├── slots.py                      # LLM interpret call: scope, intent, constraints, turn-state
+│   ├── policy.py                      # deterministic turn-budget-aware action decision
+│   ├── retriever.py                    # BM25 + metadata filtering over catalog.json
+│   ├── compose.py                       # refusal templates, clarify passthrough, recommend LLM call
+│   └── pipeline.py                       # orchestrates guard->slots->policy->retriever->compose
 ├── eval/
 │   ├── traces/                  # C1.md-C10.md, the 10 provided conversation traces
-│   └── run_eval.py               # replay harness: Recall@10, hard-evals, behavior probes
-├── tests/                       # pytest unit tests per module
+│   ├── smoke_test.py             # manual integration check against live Groq (not in pytest)
+│   └── run_eval.py                # replay harness: Recall@10, hard-evals, behavior probes (Phase 4)
+├── tests/                       # pytest unit tests per module (guard, policy, retriever)
 └── Dockerfile
 ```

@@ -140,3 +140,15 @@ class CatalogIndex:
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in scored[:top_k]]
+
+
+_cached_index: Optional["CatalogIndex"] = None
+
+
+def get_index(catalog_path: Path = DEFAULT_CATALOG_PATH) -> "CatalogIndex":
+    """Process-wide cached index — building BM25 from scratch on every request
+    would needlessly redo work that's identical across requests."""
+    global _cached_index
+    if _cached_index is None:
+        _cached_index = CatalogIndex(catalog_path)
+    return _cached_index
