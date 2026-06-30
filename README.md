@@ -300,6 +300,26 @@ itself failing on the refinement turn and falling back to empty constraints (los
 context entirely, not just the personality addition) - but this hasn't been confirmed under clean
 conditions yet and should be re-checked on the pending clean re-run rather than assumed fixed.
 
+### Spec re-audit finding (post-Phase 4)
+
+A line-by-line re-read of the brief against the implementation surfaced one real schema-compliance bug
+in `app/compose.py`. The spec is a strict binary: `recommendations` is empty *only* when still gathering
+context or refusing, and an array of **1 to 10 items** once the agent has committed to a shortlist - there
+is no valid "committed but zero items" state. The code only guaranteed at least 1 item for the
+`force_commit` path specifically; if `should_recommend=True` via `ready_to_recommend` /
+`prior_recommendations_given` / `user_is_closing` (not `force_commit`) and the LLM legitimately returned
+zero `selected_indices`, the response would silently violate the schema - e.g. a user-closing turn
+("perfect, that works") could return `recommendations: []` with `end_of_conversation: true`, which the
+spec doesn't allow. Fixed: the top-ranked-candidate fallback now applies whenever `should_recommend` is
+true and candidates exist, not just under `force_commit`; the compose prompt was tightened to state the
+binary explicitly. Also re-verified the catalog filtering (`scripts/build_catalog.py`'s 7-item Job
+Solutions exclusion) by searching all 370 remaining items for bundle-like description language ("includes
+the following", "combines insights from", etc.) - found 17 false-positive-looking matches, manually
+inspected all of them, and confirmed every one is a legitimate Individual Test Solution (e.g. "Microsoft
+Word 365" describing its own sub-topics is not the same as a "Job Solution" role bundle) - the original
+filter was complete, not under-inclusive. Added `tests/test_compose.py` (4 tests) covering the schema
+invariant directly. Full suite: 38/38 passing.
+
 ---
 
 ## 6. Decisions log

@@ -43,24 +43,27 @@ provided.
 
 Return a single JSON object:
 {
-  "selected_indices": [int, ...],   // 0-based indices into CANDIDATES, 0 to 10 items
+  "selected_indices": [int, ...],   // 0-based indices into CANDIDATES
   "reply": string                   // the natural-language reply
 }
+
+The recommendations schema is a strict binary: either no shortlist has been committed
+to yet, or 1-10 items have. There is no valid "committed but zero items" state.
 
 Rules for selected_indices, in priority order:
 1. If SHOULD_RECOMMEND is false: selected_indices MUST be []. The user has not given
    enough context for a shortlist yet (e.g. this may be a standalone comparison
    question) - just answer in `reply` without presenting a shortlist.
-2. Else if MUST_COMMIT is true: you must pick at least 1 item from CANDIDATES (the
-   most broadly reasonable fit), even if the user's needs are still somewhat vague -
-   the conversation has run out of room for further clarification, so a best-effort
-   shortlist is required over no shortlist at all.
-3. Else: pick the 1-10 candidates that best fit the user's stated needs. Standard SHL
-   practice pairs a skill/knowledge-focused shortlist with one general personality
-   assessment (test_type P, e.g. "Occupational Personality Questionnaire OPQ32r") even
-   when the user didn't explicitly ask for one - if such an item is present in
-   CANDIDATES and the request isn't explicitly personality-only or personality-excluded,
-   include it.
+2. Else (SHOULD_RECOMMEND is true, meaning a shortlist IS being committed to this
+   turn): selected_indices MUST contain at least 1 item from CANDIDATES, even if the
+   user's needs are still somewhat vague - pick the most broadly reasonable fit rather
+   than return an empty list. If MUST_COMMIT is also true, the conversation has run
+   out of room for further clarification, so this best-effort selection is mandatory,
+   not optional. Standard SHL practice pairs a skill/knowledge-focused shortlist with
+   one general personality assessment (test_type P, e.g. "Occupational Personality
+   Questionnaire OPQ32r") even when the user didn't explicitly ask for one - if such an
+   item is present in CANDIDATES and the request isn't explicitly personality-only or
+   personality-excluded, include it.
 
 If COMPARISON_RECORDS were given, ground that part of `reply` strictly in their listed
 facts (not prior knowledge), regardless of the selected_indices rules above."""
@@ -142,8 +145,14 @@ def compose_answer(
 
     if not decision.should_recommend:
         deduped = []  # belt-and-braces: never let a shortlist slip out when not warranted
-    elif decision.force_commit and not deduped and candidates:
-        deduped = [0]  # model defied MUST_COMMIT; fall back to the top-ranked candidate
+    elif not deduped and candidates:
+        # Spec is a strict binary: recommendations is EMPTY only when still gathering
+        # context or refusing, and 1-10 items once committed - there is no valid
+        # "committed but zero items" state. should_recommend=True means policy has
+        # already decided to commit (ready/prior-shown/closing/force_commit), so if
+        # the LLM returns no indices anyway, fall back to the top-ranked candidate
+        # rather than violate the schema's 1-10 guarantee.
+        deduped = [0]
 
     recommendations = [
         RecommendationItem(
