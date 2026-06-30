@@ -98,7 +98,7 @@ history. No DB/session store is used or needed.
 | Phase | Output | Status |
 |---|---|---|
 | 0 — Setup | Repo skeleton, inspect catalog/trace data | ✅ done |
-| 1 — Data | `catalog.json` (Individual Test Solutions only) + BM25 index | catalog cleaned; index not built yet |
+| 1 — Data | `catalog.json` (Individual Test Solutions only) + BM25 index | ✅ done |
 | 2 — Agent core | Guard layer, slot extractor, policy, retriever, composer (unit tested) | not started |
 | 3 — API | `/health`, `/chat`, exact response schema, error handling | not started |
 | 4 — Evaluation | Harness over the 10 traces → Recall@10, hard-eval checks, behavior probes | not started |
@@ -134,6 +134,21 @@ The catalog and trace data were supplied directly (no live scraping needed):
     textual answer *and* the shortlist table continues alongside it.
   - No off-topic/prompt-injection example exists in the public 10 traces — guard-layer behavior must
     be built defensively from the spec, not learned from examples (likely covered by holdout probes).
+
+### Phase 1 findings
+
+- `app/retriever.py`: BM25 index (`rank_bm25`) over `name`(×4) + `categories`(×2) + `description`(×1)
+  + `job_levels`(×1) tokens — repetition is the standard field-boosting trick since `rank_bm25` has no
+  native per-field weights. Hard metadata filters (`test_type`, `job_levels`, `max_duration_minutes`,
+  `remote_only`, `language`) are applied **before** ranking, so a filtered-out item can never be
+  crowded out of relevance by an irrelevant high scorer — and never sneak past a filter either.
+  `find_by_name()` does fuzzy product-name lookup for grounding comparison questions.
+- Smoke-tested against trace-style queries (`tests/test_retriever.py`, 10/10 passing): exact product
+  names ("OPQ32r") and sharp domain terms ("HIPAA") rank correctly at #1. Broader multi-concept
+  queries (e.g. "Rust engineer high performance networking") only recover part of a trace's full
+  expected shortlist in the raw top-5 — expected, since a single BM25 call isn't meant to be the final
+  answer. Phase 2's policy will pull a wider candidate pool (top_k ≈ 15–20), possibly via multiple
+  sub-queries per extracted slot, and let the LLM select/rerank within that pool.
 
 ---
 
