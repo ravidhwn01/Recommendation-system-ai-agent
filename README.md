@@ -101,7 +101,7 @@ history. No DB/session store is used or needed.
 | 1 — Data | `catalog.json` (Individual Test Solutions only) + BM25 index | ✅ done |
 | 2 — Agent core | Guard layer, slot extractor, policy, retriever, composer (unit tested) | ✅ done |
 | 3 — API | `/health`, `/chat`, exact response schema, error handling | ✅ done |
-| 4 — Evaluation | Harness over the 10 traces → Recall@10, hard-eval checks, behavior probes | not started |
+| 4 — Evaluation | Harness over the 10 traces → Recall@10, hard-eval checks, behavior probes | ✅ done (re-run pending fresh quota) |
 | 5 — Deploy | Dockerfile, deploy, verify cold start + live endpoints | not started |
 | 6 — Docs | 2-page approach document, AI-tool usage disclosure | not started |
 
@@ -230,6 +230,76 @@ un-overridable by clever phrasing.
   the 3 Java tests plus 2 personality/competency items. Added `tests/test_pipeline_retrieval.py` as a
   regression test. Full suite: 32/32 passing.
 
+### Phase 4 findings
+
+- `eval/parse_traces.py` - parses each `eval/traces/C*.md` file into the scripted sequence of user
+  messages plus the labeled expected shortlist (the table on the turn marked `end_of_conversation: true`).
+  This is a **scripted replay** harness, not a full user-simulation harness: the real evaluator drives an
+  LLM-simulated user persona that adapts to our agent's actual replies, whereas this replays the trace's
+  exact recorded user messages regardless of what our agent says back. That's a fast, deterministic,
+  zero-extra-cost proxy for local tuning, but it can diverge from the real evaluator's grading - e.g. if
+  our agent asks a different clarifying question than the trace's recorded assistant turn, replaying the
+  trace's next scripted user line may answer a question we never actually asked.
+- `eval/run_eval.py` - replays all 10 traces directly against `pipeline.handle_chat` (no HTTP, for speed),
+  computes Recall@10 by URL match against each trace's expected shortlist, validates hard-eval constraints
+  (schema, catalog-only URLs, turn cap) across **every** turn of every trace (not just the final one), and
+  runs 6 behavior probes (off-topic refusal, no-recommend-on-vague-turn-1, legal-advice refusal,
+  prompt-injection refusal, refinement honored, comparison grounded without a spurious shortlist).
+
+**Rate limits dominated this phase and are themselves a real finding.** Running 10 traces back-to-back
+(~45 turns, up to 2 LLM calls each) repeatedly tripped Groq free-tier limits: first the per-minute cap
+(12,000 TPM on `llama-3.3-70b-versatile`), then - after enough cumulative testing in one day across
+multiple accounts - the **daily cap (100,000 TPD)**, which is per-organization and does not reset by
+generating a new API key within the same account. Mitigations applied directly to `app/llm.py` (not just
+the eval script, since this is a real production risk too): `max_retries=0` on the Groq client with one
+deliberate, capped backoff-and-retry specifically for `RateLimitError` (other failures still fail fast to
+protect the `/chat` hard deadline), plus trimming `CANDIDATE_POOL_SIZE` and per-candidate description
+length in `app/compose.py` to cut prompt size. None of this eliminates the daily cap, only the per-minute
+one. **Production implication**: the real evaluator's traffic is one paced conversation at a time, not a
+tight batch loop, so it's far less likely to trip the per-minute limit than this harness - but a Dev-tier
+or alternate-provider key is worth having before relying on heavy iteration close to submission time.
+
+Across multiple runs, mean Recall@10 ranged from 0.02 (daily-quota-exhausted runs, where nearly every
+LLM call failed and fell back to generic templated behavior) to 0.321 (a run that hit only per-minute
+limits, with most calls eventually succeeding after backoff). The 0.321 run is the most trustworthy
+number obtained so far; **a clean, fully-successful run is still pending a fresh-quota key** and should be
+re-run before final submission. Two findings survived even the worst, near-total-LLM-failure runs:
+**hard-evals passed with 0 violations in every single run** (the Python-side catalog-grounding and schema
+guarantees hold regardless of LLM call success - the whole point of building them that way), and the
+off-topic/legal/injection refusal probes plus the comparison-grounding probe passed consistently (5/6).
+
+**A real, reproducible recall gap, not noise**: "Occupational Personality Questionnaire OPQ32r" was
+missed across most traces in every run, including the cleaner one. Cross-referencing all 10 traces showed
+it isn't random - OPQ32r (SHL's flagship, broadest-coverage personality instrument) recurs as a default
+complement to a primarily technical/skill-focused shortlist in 6 of 10 expected answers, several with no
+personality test_type ever explicitly requested by the user (e.g. a pure "Java, Spring, SQL, AWS, Docker"
+request still expected OPQ32r). Root cause: when `test_types` is inferred as e.g. `{'K'}` from a technical
+request, the main retrieval never even fetches a personality candidate for compose to consider, and a
+generic BM25 search among personality items has no tech-specific terms to rank OPQ32r above any other
+personality item anyway. Fixed in `app/pipeline.py::_supplement_with_personality`: whenever a shortlist
+is being built and personality wasn't explicitly excluded, look up OPQ32r by name and add it to the
+candidate pool (respecting any other active filters like duration/remote/language), in addition to a
+small generic personality-type search. Verified directly (not via noisy full-harness runs) via
+`tests/test_pipeline_retrieval.py` and isolated single-trace replays - confirmed OPQ32r now reaches the
+candidate pool and is selected in cases it previously wasn't (e.g. C2's recall went 0.2 -> 0.4 in an
+isolated before/after test). This is intentionally **not** a forced inclusion - `compose.py`'s LLM still
+decides whether to select it, so traces where OPQ32r genuinely isn't expected (C3, C6, C10) aren't
+penalized by always force-adding it.
+
+**A second bug found through this same investigation**: the personality supplement was originally
+*appended* to the end of the candidate list. `compose.py`'s graceful-degradation fallback (when the LLM
+call itself fails) takes `candidates[:5]` - which silently sliced off the supplement every time, i.e.
+exactly when rate-limit pressure was highest and the supplement mattered most. Fixed by prepending instead
+of appending. Added two regression tests in `tests/test_pipeline_retrieval.py` that verify this without
+any live API call (one checks candidate ordering directly, one mocks the LLM call to fail and asserts
+OPQ32r still survives the fallback path) - full suite now 34/34 passing.
+
+**One probe remains a genuine, reproducible fail**: `honors_refinement_edit` failed in every run so far.
+Given the rate-limit pressure during every run to date, this is plausibly explained by the interpret call
+itself failing on the refinement turn and falling back to empty constraints (losing the "Java developer"
+context entirely, not just the personality addition) - but this hasn't been confirmed under clean
+conditions yet and should be re-checked on the pending clean re-run rather than assumed fixed.
+
 ---
 
 ## 6. Decisions log
@@ -244,6 +314,9 @@ un-overridable by clever phrasing.
 | 2026-07-01 | At most 2 LLM calls per turn (interpret + compose); refusals/clarifications use 0 LLM calls | Fits the 30s/call budget with headroom; refusal text being templated (not generated) means it can't be talked out of refusing |
 | 2026-07-01 | `should_recommend` and `comparison_requested` are independent policy flags, not one combined branch | A context-free comparison question was spuriously attaching an unrelated shortlist when comparison forced the same path as recommend-readiness; found via `eval/smoke_test.py` |
 | 2026-07-01 | Recommendations are built by mapping LLM-selected indices back to catalog rows in Python, never from LLM-generated text | Structurally prevents hallucinated names/URLs from ever reaching the response |
+| 2026-07-01 | `app/llm.py` does one capped retry-with-backoff specifically for `RateLimitError`, other failures still fail fast | Found Groq free-tier TPM/TPD limits get tripped by realistic conversation volume; a 429 is recoverable and worth one short wait, unlike other failure modes where retrying risks blowing the `/chat` deadline |
+| 2026-07-01 | OPQ32r is looked up by name and prioritized in the candidate pool whenever a shortlist is built and personality isn't explicitly excluded, rather than relying on generic P-type BM25 ranking | Empirically the default complement to technical shortlists in 6/10 traces, consistent with it being SHL's flagship personality instrument in real practice - not just trace-overfitting | 
+| 2026-07-01 | Eval harness is scripted replay (exact trace user messages), not LLM-simulated user | Fast, deterministic, zero extra API cost for local tuning; documented as an approximation of the real evaluator, not equivalent to it |
 
 ---
 
@@ -253,6 +326,14 @@ un-overridable by clever phrasing.
 - [x] The 10 public conversation traces — supplied directly, relocated to `eval/traces/`.
 - [x] `GROQ_API_KEY` for inference — in local `.env` (gitignored, not committed).
 - [ ] Final hosting target for the public endpoint (deferred — Dockerized to stay host-agnostic).
+- [ ] **A clean, fully-successful eval run** — every run to date hit Groq free-tier rate limits (per-minute
+      and, after enough same-day testing, per-organization daily caps), so the Recall@10 numbers in
+      `eval/results.json` are not yet trustworthy as a final figure. Needs a fresh-quota key (genuinely
+      different account, not just a new key in an already-used account) or a paid tier, ideally close to
+      final submission so the number reflects the final code.
+- [ ] Re-check the `honors_refinement_edit` probe under clean (non-rate-limited) conditions — failed in
+      every run so far, plausibly explained by interpret-call failures under rate-limit pressure on that
+      specific turn, but not yet confirmed as fixed vs. a real remaining bug.
 
 ---
 
@@ -286,7 +367,9 @@ SHL/
 ├── eval/
 │   ├── traces/                  # C1.md-C10.md, the 10 provided conversation traces
 │   ├── smoke_test.py             # manual integration check against live Groq (not in pytest)
-│   └── run_eval.py                # replay harness: Recall@10, hard-evals, behavior probes (Phase 4)
-├── tests/                       # pytest unit tests per module (guard, policy, retriever)
+│   ├── parse_traces.py            # trace .md -> structured TraceCase (scripted user turns + expected shortlist)
+│   ├── run_eval.py                 # replay harness: Recall@10, hard-evals, behavior probes
+│   └── results.json                 # latest run's output (caveated - see "Phase 4 findings")
+├── tests/                       # pytest unit tests per module (guard, policy, retriever, pipeline, api)
 └── Dockerfile
 ```

@@ -55,7 +55,12 @@ Rules for selected_indices, in priority order:
    most broadly reasonable fit), even if the user's needs are still somewhat vague -
    the conversation has run out of room for further clarification, so a best-effort
    shortlist is required over no shortlist at all.
-3. Else: pick the 1-10 candidates that best fit the user's stated needs.
+3. Else: pick the 1-10 candidates that best fit the user's stated needs. Standard SHL
+   practice pairs a skill/knowledge-focused shortlist with one general personality
+   assessment (test_type P, e.g. "Occupational Personality Questionnaire OPQ32r") even
+   when the user didn't explicitly ask for one - if such an item is present in
+   CANDIDATES and the request isn't explicitly personality-only or personality-excluded,
+   include it.
 
 If COMPARISON_RECORDS were given, ground that part of `reply` strictly in their listed
 facts (not prior knowledge), regardless of the selected_indices rules above."""
@@ -74,8 +79,7 @@ def _format_candidates(candidates: list[dict]) -> str:
     for i, c in enumerate(candidates):
         lines.append(
             f"{i}: {c['name']} | test_type={c['test_type']} | duration={c.get('duration') or 'n/a'} "
-            f"| job_levels={', '.join(c.get('job_levels', [])) or 'n/a'} "
-            f"| desc={c.get('description', '')[:160]}"
+            f"| desc={c.get('description', '')[:100]}"
         )
     return "\n".join(lines) if lines else "(no candidates retrieved)"
 

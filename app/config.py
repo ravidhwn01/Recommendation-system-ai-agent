@@ -4,6 +4,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# The eval harness hit Groq's free-tier TPM rate limit partway through a
+# 10-trace run. Counter to the usual assumption that smaller models get a
+# higher throughput allowance, this account's free tier actually caps
+# llama-3.1-8b-instant at a LOWER limit (6000 TPM) than llama-3.3-70b-versatile
+# (12000 TPM) - confirmed empirically (see README "Phase 4 findings"), not
+# assumed. Sticking with the 70b model; the real fix for rate-limit headroom is
+# the prompt-size reduction in app/compose.py and the retry/backoff in
+# app/llm.py, not a model swap. Override via env var if your account differs.
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 

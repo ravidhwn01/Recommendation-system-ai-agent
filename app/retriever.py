@@ -57,6 +57,35 @@ class SearchFilters:
     language: Optional[str] = None              # substring match against item languages
 
 
+def item_matches_filters(item: dict, filters: SearchFilters, duration_minutes: Optional[int] = None) -> bool:
+    """Standalone filter check reusable outside the BM25 hot path (e.g. for a
+    specific name lookup, not just ranked search results). Pass duration_minutes
+    to skip re-parsing the duration string when the caller already has it."""
+    if filters.test_types:
+        item_types = {t.strip() for t in item.get("test_type", "").split(",") if t.strip()}
+        if not item_types & filters.test_types:
+            return False
+
+    if filters.job_levels:
+        if not set(item.get("job_levels", [])) & filters.job_levels:
+            return False
+
+    if filters.max_duration_minutes is not None:
+        mins = duration_minutes if duration_minutes is not None else parse_duration_minutes(item.get("duration", ""))
+        if mins is not None and mins > filters.max_duration_minutes:
+            return False
+
+    if filters.remote_only and item.get("remote", "").lower() != "yes":
+        return False
+
+    if filters.language:
+        lang_q = filters.language.lower()
+        if not any(lang_q in lang.lower() for lang in item.get("languages", [])):
+            return False
+
+    return True
+
+
 class CatalogIndex:
     def __init__(self, catalog_path: Path = DEFAULT_CATALOG_PATH):
         self.catalog: list[dict] = json.loads(Path(catalog_path).read_text(encoding="utf-8"))
@@ -65,31 +94,7 @@ class CatalogIndex:
         self._duration_minutes = [parse_duration_minutes(item.get("duration", "")) for item in self.catalog]
 
     def _passes_filters(self, idx: int, filters: SearchFilters) -> bool:
-        item = self.catalog[idx]
-
-        if filters.test_types:
-            item_types = {t.strip() for t in item.get("test_type", "").split(",") if t.strip()}
-            if not item_types & filters.test_types:
-                return False
-
-        if filters.job_levels:
-            if not set(item.get("job_levels", [])) & filters.job_levels:
-                return False
-
-        if filters.max_duration_minutes is not None:
-            mins = self._duration_minutes[idx]
-            if mins is not None and mins > filters.max_duration_minutes:
-                return False
-
-        if filters.remote_only and item.get("remote", "").lower() != "yes":
-            return False
-
-        if filters.language:
-            lang_q = filters.language.lower()
-            if not any(lang_q in lang.lower() for lang in item.get("languages", [])):
-                return False
-
-        return True
+        return item_matches_filters(self.catalog[idx], filters, duration_minutes=self._duration_minutes[idx])
 
     def search(
         self,
