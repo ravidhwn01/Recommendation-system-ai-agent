@@ -219,6 +219,16 @@ un-overridable by clever phrasing.
   clarifying response, a comparison question returns a grounded answer with `recommendations: []`, and
   a malformed request returns 422, all through the actual ASGI server rather than the in-process test
   client.
+- Live demo run through the actual server surfaced a real retrieval bug: replaying the spec's own
+  example conversation (Java developer -> mid-level -> "actually, add personality tests") returned the
+  same 3 Java/K-type items unchanged - the refinement was silently ignored. Root cause: a single BM25
+  query text biased toward "Java developer" terms ranks K-type items so far above P-type items that
+  none made the top-20 candidate pool at all, even though the `test_type` filter correctly allowed both.
+  Fixed in `app/pipeline.py::_retrieve_candidates`: when more than one test_type is requested, retrieve
+  per type and merge the results, so every requested category gets guaranteed representation regardless
+  of how the free-text query is worded. Re-verified live: the same conversation now correctly returns
+  the 3 Java tests plus 2 personality/competency items. Added `tests/test_pipeline_retrieval.py` as a
+  regression test. Full suite: 32/32 passing.
 
 ---
 
