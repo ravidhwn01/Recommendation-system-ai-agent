@@ -100,7 +100,7 @@ history. No DB/session store is used or needed.
 | 0 — Setup | Repo skeleton, inspect catalog/trace data | ✅ done |
 | 1 — Data | `catalog.json` (Individual Test Solutions only) + BM25 index | ✅ done |
 | 2 — Agent core | Guard layer, slot extractor, policy, retriever, composer (unit tested) | ✅ done |
-| 3 — API | `/health`, `/chat`, exact response schema, error handling | not started |
+| 3 — API | `/health`, `/chat`, exact response schema, error handling | ✅ done |
 | 4 — Evaluation | Harness over the 10 traces → Recall@10, hard-eval checks, behavior probes | not started |
 | 5 — Deploy | Dockerfile, deploy, verify cold start + live endpoints | not started |
 | 6 — Docs | 2-page approach document, AI-tool usage disclosure | not started |
@@ -193,6 +193,33 @@ un-overridable by clever phrasing.
   no network), covering injection detection and every policy branch including turn-cap edges. Full
   suite: 23/23 passing.
 
+### Phase 3 findings
+
+- `app/main.py` - thin FastAPI wrapper: `GET /health` returns `{"status": "ok"}`; `POST /chat` runs
+  `pipeline.handle_chat` (synchronous - uses the sync Groq client) in a threadpool via
+  `run_in_threadpool`, wrapped in `asyncio.wait_for` with a 25s hard deadline (`CHAT_HARD_DEADLINE_SECONDS`
+  in `app/config.py`). If that deadline trips, or `handle_chat` raises for any unanticipated reason, the
+  endpoint returns a templated fallback `ChatResponse` (HTTP 200, valid schema, empty recommendations)
+  rather than a 500 or a hang - matching the "graceful degradation" guardrail rather than letting a
+  single bad turn fail the whole evaluator run.
+- The BM25 index is built once at FastAPI startup (`lifespan` calls `get_index()`), not lazily on the
+  first request, so the first real `/chat` call after a cold start isn't doing index-build work on top
+  of LLM latency.
+- Tightened the LLM timeout budget after thinking through worst-case latency: Groq's SDK retries
+  transient errors by default, which could silently multiply a single call's latency well past its
+  stated timeout. Set `max_retries=0` on the Groq client and dropped `LLM_TIMEOUT_SECONDS` to 8s, so
+  two LLM calls in the worst case cost at most 16s - comfortably inside both the 25s app-level deadline
+  and the evaluator's 30s/call cap.
+- `tests/test_api.py` - 6 tests using `TestClient` with `handle_chat` mocked (fast, deterministic, no
+  LLM calls): exact response-shape compliance, empty-recommendations serialization, graceful fallback
+  on a simulated pipeline exception, and 422 rejection of malformed requests (bad `role`, missing
+  `messages`). Full suite: 29/29 passing.
+- Verified manually over real HTTP (not just `TestClient`) by running `uvicorn app.main:app` and
+  curling `/health` and `/chat` directly - confirmed a vague query correctly returns an empty-shortlist
+  clarifying response, a comparison question returns a grounded answer with `recommendations: []`, and
+  a malformed request returns 422, all through the actual ASGI server rather than the in-process test
+  client.
+
 ---
 
 ## 6. Decisions log
@@ -236,7 +263,7 @@ SHL/
 │   │   └── catalog_raw.json    # original scraped catalog (377 items, as supplied)
 │   └── catalog.json            # cleaned Individual Test Solutions catalog (370 items)
 ├── app/
-│   ├── main.py                  # FastAPI app: /health, /chat (Phase 3, not yet built)
+│   ├── main.py                  # FastAPI app: /health, /chat
 │   ├── config.py                 # env loading: GROQ_API_KEY/MODEL, timeouts, turn-budget constants
 │   ├── schemas.py                 # Pydantic request/response models
 │   ├── llm.py                      # Groq client wrapper (chat_json / chat_text, fails soft)

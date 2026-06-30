@@ -16,7 +16,11 @@ _client: Groq | None = None
 def _get_client() -> Groq:
     global _client
     if _client is None:
-        _client = Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
+        # max_retries=0: the SDK retries transient errors by default, which could
+        # silently multiply a single call's worst-case latency past the timeout
+        # and blow the /chat hard deadline. Failing fast and letting the caller's
+        # fallback handle it is more predictable under a strict time budget.
+        _client = Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
     return _client
 
 
