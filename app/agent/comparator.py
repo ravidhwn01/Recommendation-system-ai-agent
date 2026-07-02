@@ -1,5 +1,6 @@
 import re
 
+from app.data.schemas import expand_test_type
 from app.rag.retriever import Retriever
 from app.services.vector_service import VectorService
 
@@ -20,7 +21,10 @@ class ComparisonEngine:
     def _summarize(self, meta: dict) -> str:
         parts = [f"- {meta.get('name', 'Unknown')} ({meta.get('url', '')})"]
         if meta.get("test_type"):
-            parts.append(f"  Test type: {meta['test_type']}")
+            readable = expand_test_type(meta["test_type"])
+            label = f"{meta['test_type']} ({readable})" if readable \
+                else meta["test_type"]
+            parts.append(f"  Test type: {label}")
         if meta.get("duration"):
             parts.append(f"  Duration: {meta['duration']} minutes")
         if meta.get("job_levels"):

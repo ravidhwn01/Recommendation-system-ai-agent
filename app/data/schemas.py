@@ -16,6 +16,25 @@ TEST_TYPE_CODES = {
     "simulations": "S",
 }
 
+# Reverse map: code -> canonical category name.
+TEST_TYPE_NAMES = {
+    "A": "Ability & Aptitude",
+    "B": "Biodata & Situational Judgment",
+    "C": "Competencies",
+    "D": "Development & 360",
+    "E": "Assessment Exercises",
+    "K": "Knowledge & Skills",
+    "P": "Personality & Behavior",
+    "S": "Simulations",
+}
+
+
+def expand_test_type(code: str) -> str:
+    """'PS' -> 'Personality & Behavior, Simulations'."""
+    names = [TEST_TYPE_NAMES.get(ch) for ch in (code or "") if ch in TEST_TYPE_NAMES]
+    return ", ".join(n for n in names if n)
+
+
 _TRUE_VALUES = {"yes", "true", "1", "y"}
 _DURATION_NULLS = {"", "-", "n/a", "variable", "untimed", "tbc", "none"}
 
