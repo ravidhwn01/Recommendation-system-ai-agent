@@ -91,7 +91,8 @@ class Agent:
 
         if action in ("recommend", "refine"):
             need = decision.get("search_query") or all_user_text
-            eoc = bool(decision.get("end_of_conversation", False))
+            # A committed shortlist means the task is complete.
+            eoc = True
             # On refine, also retrieve for the new constraint so the edit is
             # reflected in the candidate pool (not drowned out by prior terms).
             boost = latest if action == "refine" else None
