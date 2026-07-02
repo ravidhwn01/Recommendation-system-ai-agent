@@ -1,10 +1,8 @@
-from typing import Optional
-
 from pydantic import BaseModel, Field
+from typing import Optional
 
 
 class Assessment(BaseModel):
-
     id: Optional[str] = None
 
     name: str
@@ -13,11 +11,11 @@ class Assessment(BaseModel):
 
     url: str = ""
 
-    duration: str = ""
+    duration: Optional[int] = None
 
-    remote_testing: str = ""
+    remote_testing: bool = False
 
-    adaptive: str = ""
+    adaptive: bool = False
 
     test_type: str = ""
 
@@ -25,4 +23,4 @@ class Assessment(BaseModel):
 
     languages: list[str] = Field(default_factory=list)
 
-    skills: str = ""
+    skills: list[str] = Field(default_factory=list)

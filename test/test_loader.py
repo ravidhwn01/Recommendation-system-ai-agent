@@ -1,19 +1,33 @@
-from app.data import DataCleaner
-from app.data import DataLoader
-from app.data import DatasetValidator
+import asyncio
+from pathlib import Path
+import sys
 
-loader = DataLoader(
-    "data/raw/catalog_raw.json"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-raw = loader.load()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-validator = DatasetValidator()
+from app.services.dataset_service import DatasetService
 
-validated = validator.validate(raw)
 
-cleaner = DataCleaner()
+async def _load_assessments_count() -> tuple[int, object]:
 
-clean = cleaner.clean(validated)
+    service = DatasetService()
 
-print(clean)
+    assessments = await service.load_assessments()
+
+    return len(assessments), assessments[0]
+
+
+def test_loader_reads_catalog() -> None:
+
+    count, first = asyncio.run(_load_assessments_count())
+
+    assert count > 0
+    assert first is not None
+
+
+if __name__ == "__main__":
+    count, first = asyncio.run(_load_assessments_count())
+    print(count)
+    print(first)

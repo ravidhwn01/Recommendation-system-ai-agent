@@ -10,11 +10,11 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: str = ""
 
-    EMBEDDING_MODEL: str
+    VECTOR_DB_PATH: str = "./vector_db"
 
-    VECTOR_DB_PATH: str
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
 
-    DATA_PATH: str
+    DATA_PATH: str = "./data"
 
     model_config = SettingsConfigDict(
         env_file=".env",
