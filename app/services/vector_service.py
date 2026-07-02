@@ -21,5 +21,9 @@ class VectorService:
     def similarity_search(self, query: str, k: int = 10):
         return self.db.similarity_search(query, k=k)
 
+    def get_all_metadatas(self) -> list[dict]:
+        result = self.db.get()
+        return result.get("metadatas") or []
+
     def add_documents(self, documents):
         self.db.add_documents(documents)

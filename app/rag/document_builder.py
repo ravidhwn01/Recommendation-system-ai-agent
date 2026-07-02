@@ -53,6 +53,13 @@ Adaptive:
                 "skills": ", ".join(assessment.skills),
             }
 
+            # Chroma metadata values must be str/int/float/bool (no None).
+            metadata = {
+                key: value
+                for key, value in metadata.items()
+                if value is not None
+            }
+
             documents.append(
                 Document(
                     metadata=metadata,

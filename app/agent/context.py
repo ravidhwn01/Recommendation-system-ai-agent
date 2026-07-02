@@ -21,6 +21,21 @@ class ContextManager:
 		return ""
 
 	@staticmethod
+	def get_all_user_text(messages: list[dict[str, Any]]) -> str:
+		"""
+		Concatenate every user message so context accumulates across turns.
+		"""
+
+		parts = [
+			message.get("content", "").strip()
+			for message in messages
+			if message.get("role") == "user"
+			and message.get("content", "").strip()
+		]
+
+		return " ".join(parts)
+
+	@staticmethod
 	def get_conversation(messages: list[dict[str, Any]]) -> str:
 		"""
 		Convert the conversation history into plain text.

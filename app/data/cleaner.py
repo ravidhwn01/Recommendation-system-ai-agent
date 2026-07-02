@@ -1,31 +1,25 @@
-# import re
+import re
 
-# from app.data.schemas import Assessment
+from app.data.schemas import Assessment
 
 
-# class DataCleaner:
+class DataCleaner:
 
-#     @staticmethod
-#     def clean_text(text: str) -> str:
+    @staticmethod
+    def clean_text(text: str) -> str:
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
-#         text = re.sub(r"\s+", " ", text)
+    def clean(self, assessments: list[Assessment]) -> list[Assessment]:
 
-#         return text.strip()
+        cleaned = []
 
-#     def clean(self, assessments: list[Assessment]) -> list[Assessment]:
+        for assessment in assessments:
 
-#         cleaned = []
+            assessment.name = self.clean_text(assessment.name)
 
-#         for assessment in assessments:
+            assessment.description = self.clean_text(assessment.description)
 
-#             assessment.name = self.clean_text(
-#                 assessment.name
-#             )
+            cleaned.append(assessment)
 
-#             assessment.description = self.clean_text(
-#                 assessment.description
-#             )
-
-#             cleaned.append(assessment)
-
-#         return cleaned
+        return cleaned
